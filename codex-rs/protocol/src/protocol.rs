@@ -191,6 +191,12 @@ pub enum Op {
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
 
+    /// Generate a manual compaction preview without rewriting history.
+    CompactPreview,
+
+    /// Apply the latest compaction preview without re-generating it.
+    CompactApply,
+
     /// Request Codex to undo a turn (turn are stacked so it is the same effect as CMD + Z).
     Undo,
 
@@ -486,6 +492,9 @@ pub enum EventMsg {
     /// Conversation history was compacted (either automatically or manually).
     ContextCompacted(ContextCompactedEvent),
 
+    /// A manual compaction preview was generated without rewriting history.
+    ContextCompactionPreview(ContextCompactionPreviewEvent),
+
     /// Agent has started a task
     TaskStarted(TaskStartedEvent),
 
@@ -775,6 +784,11 @@ pub struct WarningEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ContextCompactedEvent;
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct ContextCompactionPreviewEvent {
+    pub message: String,
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct TaskCompleteEvent {

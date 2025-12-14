@@ -222,6 +222,9 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
                 ts_msg!(self, "{}", message.style(self.dimmed));
             }
+            EventMsg::ContextCompactionPreview(ev) => {
+                ts_msg!(self, "{}", ev.message.style(self.dimmed));
+            }
             EventMsg::StreamError(StreamErrorEvent { message, .. }) => {
                 ts_msg!(self, "{}", message.style(self.dimmed));
             }

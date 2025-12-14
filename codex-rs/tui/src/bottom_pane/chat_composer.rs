@@ -33,6 +33,7 @@ use super::skill_popup::SkillPopup;
 use crate::bottom_pane::paste_burst::FlushResult;
 use crate::bottom_pane::prompt_args::expand_custom_prompt;
 use crate::bottom_pane::prompt_args::expand_if_numeric_with_positional_args;
+use crate::bottom_pane::prompt_args::parse_positional_args;
 use crate::bottom_pane::prompt_args::parse_slash_name;
 use crate::bottom_pane::prompt_args::prompt_argument_names;
 use crate::bottom_pane::prompt_args::prompt_command_with_arg_placeholders;
@@ -73,6 +74,10 @@ const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
 pub enum InputResult {
     Submitted(String),
     Command(SlashCommand),
+    CommandWithArgs {
+        cmd: SlashCommand,
+        args: Vec<String>,
+    },
     None,
 }
 
@@ -1082,15 +1087,46 @@ impl ChatComposer {
                 // the '/name' token and our caret-based heuristic hides the popup,
                 // but Enter should still dispatch the command rather than submit
                 // literal text.
-                let first_line = self.textarea.text().lines().next().unwrap_or("");
-                if let Some((name, rest)) = parse_slash_name(first_line)
-                    && rest.is_empty()
+                let first_line = self
+                    .textarea
+                    .text()
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                if let Some((name, rest)) = parse_slash_name(&first_line)
                     && let Some((_n, cmd)) = built_in_slash_commands()
                         .into_iter()
                         .find(|(n, _)| *n == name)
                 {
+                    let name = name.to_string();
+                    let args = parse_positional_args(rest);
                     self.textarea.set_text("");
-                    return (InputResult::Command(cmd), true);
+
+                    if args.is_empty() {
+                        return (InputResult::Command(cmd), true);
+                    }
+
+                    if cmd == SlashCommand::Compact {
+                        match args.as_slice() {
+                            [flag] if flag == "--preview" || flag == "--apply" => {
+                                return (InputResult::CommandWithArgs { cmd, args }, true);
+                            }
+                            _ => {
+                                self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                                    history_cell::new_error_event(
+                                        "Usage: /compact [--preview|--apply]".to_string(),
+                                    ),
+                                )));
+                                return (InputResult::None, true);
+                            }
+                        }
+                    }
+
+                    self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                        history_cell::new_error_event(format!("'/{name}' does not support args.")),
+                    )));
+                    return (InputResult::None, true);
                 }
                 // If we're in a paste-like burst capture, treat Enter as part of the burst
                 // and accumulate it rather than submitting or inserting immediately.
@@ -2705,6 +2741,12 @@ mod tests {
             InputResult::Command(cmd) => {
                 assert_eq!(cmd.command(), "init");
             }
+            InputResult::CommandWithArgs { cmd, .. } => {
+                panic!(
+                    "expected command dispatch, got command with args: /{}",
+                    cmd.command()
+                )
+            }
             InputResult::Submitted(text) => {
                 panic!("expected command dispatch, but composer submitted literal text: {text}")
             }
@@ -2778,6 +2820,12 @@ mod tests {
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         match result {
             InputResult::Command(cmd) => assert_eq!(cmd.command(), "diff"),
+            InputResult::CommandWithArgs { cmd, .. } => {
+                panic!(
+                    "expected command dispatch, got command with args: /{}",
+                    cmd.command()
+                )
+            }
             InputResult::Submitted(text) => {
                 panic!("expected command dispatch after Tab completion, got literal submit: {text}")
             }
@@ -2810,6 +2858,12 @@ mod tests {
         match result {
             InputResult::Command(cmd) => {
                 assert_eq!(cmd.command(), "mention");
+            }
+            InputResult::CommandWithArgs { cmd, .. } => {
+                panic!(
+                    "expected command dispatch, got command with args: /{}",
+                    cmd.command()
+                )
             }
             InputResult::Submitted(text) => {
                 panic!("expected command dispatch, but composer submitted literal text: {text}")

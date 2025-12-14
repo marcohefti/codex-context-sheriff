@@ -30,3 +30,11 @@ Control Codex’s behavior during an interactive session with slash commands.
 | `/feedback`  | send logs to maintainers                                    |
 
 ---
+
+### `/compact`
+
+Summarize the current conversation context into a bridge to free up context window.
+
+- `/compact` rewrites the session history immediately.
+- `/compact --preview` shows what the summary would be without rewriting history (side-effect-free). The preview includes a carry-over estimate and can be applied with `/compact --apply`.
+- `/compact --apply` applies the latest preview verbatim (does not re-generate).

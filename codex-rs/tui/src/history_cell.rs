@@ -697,10 +697,20 @@ pub(crate) fn new_compaction_summary(summary: String, label: &str) -> PlainHisto
     let mut rendered: Vec<Line<'static>> = Vec::new();
     append_markdown(&summary, None, &mut rendered);
 
+    // For preview-style cells we want the summary body dimmed, but keep the
+    // footer lines (stats / next-action hints) readable.
     let rendered = rendered
         .into_iter()
         .map(|mut line| {
-            line.style = line.style.dim();
+            let text = line.to_string();
+            let is_footer = matches!(
+                text.trim_start(),
+                s if s.starts_with("Retained recent user messages:")
+                    || s.starts_with("Apply this preview with /compact --apply")
+            );
+            if !is_footer {
+                line.style = line.style.dim();
+            }
             line
         })
         .collect::<Vec<_>>();

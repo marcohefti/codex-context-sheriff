@@ -23,6 +23,7 @@ use codex_core::protocol::AgentReasoningRawContentDeltaEvent;
 use codex_core::protocol::AgentReasoningRawContentEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
 use codex_core::protocol::BackgroundEventEvent;
+use codex_core::protocol::ContextCompactionPreviewEvent;
 use codex_core::protocol::CreditsSnapshot;
 use codex_core::protocol::DeprecationNoticeEvent;
 use codex_core::protocol::ErrorEvent;
@@ -448,6 +449,13 @@ impl ChatWidget {
             return;
         }
         self.task_complete_pending = true;
+        self.request_redraw();
+    }
+
+    fn on_context_compaction_preview(&mut self, event: ContextCompactionPreviewEvent) {
+        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+            history_cell::new_compaction_summary(event.message, "Compaction preview"),
+        )));
         self.request_redraw();
     }
 
@@ -1586,6 +1594,9 @@ impl ChatWidget {
                     InputResult::Command(cmd) => {
                         self.dispatch_command(cmd);
                     }
+                    InputResult::CommandWithArgs { cmd, args } => {
+                        self.dispatch_command_with_args(cmd, args);
+                    }
                     InputResult::None => {}
                 }
             }
@@ -1747,6 +1758,46 @@ impl ChatWidget {
                         grant_root: Some(PathBuf::from("/tmp")),
                     }),
                 }));
+            }
+        }
+    }
+
+    fn dispatch_command_with_args(&mut self, cmd: SlashCommand, args: Vec<String>) {
+        if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
+            let message = format!(
+                "'/{}' is disabled while a task is in progress.",
+                cmd.command()
+            );
+            self.add_to_history(history_cell::new_error_event(message));
+            self.request_redraw();
+            return;
+        }
+
+        match cmd {
+            SlashCommand::Compact => {
+                self.clear_token_usage();
+                match args.as_slice() {
+                    [flag] if flag == "--preview" => {
+                        self.app_event_tx
+                            .send(AppEvent::CodexOp(Op::CompactPreview));
+                    }
+                    [flag] if flag == "--apply" => {
+                        self.app_event_tx.send(AppEvent::CodexOp(Op::CompactApply));
+                    }
+                    _ => {
+                        self.add_to_history(history_cell::new_error_event(
+                            "Usage: /compact [--preview|--apply]".to_string(),
+                        ));
+                        self.request_redraw();
+                    }
+                }
+            }
+            _ => {
+                self.add_to_history(history_cell::new_error_event(format!(
+                    "'/{cmd}' does not support args.",
+                    cmd = cmd.command()
+                )));
+                self.request_redraw();
             }
         }
     }
@@ -1994,6 +2045,7 @@ impl ChatWidget {
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
             EventMsg::ContextCompacted(_) => self.on_context_compacted(),
+            EventMsg::ContextCompactionPreview(ev) => self.on_context_compaction_preview(ev),
             EventMsg::RawResponseItem(_)
             | EventMsg::ItemStarted(_)
             | EventMsg::ItemCompleted(_)
