@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -123,7 +124,9 @@ use self::agent::spawn_agent_from_existing;
 mod session_header;
 use self::session_header::SessionHeader;
 use crate::streaming::controller::StreamController;
-use std::path::Path;
+use codex_core::compact;
+
+const COMPACTION_SUMMARY_LABEL: &str = "Compaction summary";
 
 use chrono::Local;
 use codex_common::approval_presets::ApprovalPreset;
@@ -333,6 +336,9 @@ pub(crate) struct ChatWidget {
     feedback: codex_feedback::CodexFeedback,
     // Current session rollout path (if known)
     current_rollout_path: Option<PathBuf>,
+
+    // Cached compaction summary for the next `ContextCompacted` event.
+    next_compaction_summary: Option<String>,
 }
 
 struct UserMessage {
@@ -367,6 +373,21 @@ fn create_initial_user_message(text: String, image_paths: Vec<PathBuf>) -> Optio
 }
 
 impl ChatWidget {
+    pub(crate) fn set_next_compaction_summary(&mut self, summary: String) {
+        self.next_compaction_summary = Some(summary.clone());
+        if !self.task_complete_pending {
+            return;
+        }
+
+        self.task_complete_pending = false;
+        self.on_agent_message("Context compacted".to_owned());
+        self.add_to_history(history_cell::new_compaction_summary(
+            summary,
+            COMPACTION_SUMMARY_LABEL,
+        ));
+        self.request_redraw();
+    }
+
     fn flush_answer_stream_with_separator(&mut self) {
         if let Some(mut controller) = self.stream_controller.take()
             && let Some(cell) = controller.finalize()
@@ -396,6 +417,7 @@ impl ChatWidget {
         self.conversation_id = Some(event.session_id);
         self.current_rollout_path = Some(event.rollout_path.clone());
         let initial_messages = event.initial_messages.clone();
+        self.next_compaction_summary = None;
         let model_for_header = event.model.clone();
         self.session_header.set_model(&model_for_header);
         self.add_to_history(history_cell::new_session_info(
@@ -407,6 +429,8 @@ impl ChatWidget {
         if let Some(messages) = initial_messages {
             self.replay_initial_messages(messages);
         }
+
+        self.refresh_compaction_summary_from_rollout();
         // Ask codex-core to enumerate custom prompts for this session.
         self.submit_op(Op::ListCustomPrompts);
         if let Some(user_message) = self.initial_user_message.take() {
@@ -415,6 +439,74 @@ impl ChatWidget {
         if !self.suppress_session_configured_redraw {
             self.request_redraw();
         }
+    }
+
+    fn on_context_compacted(&mut self) {
+        self.refresh_compaction_summary_from_rollout();
+        if let Some(summary) = self.next_compaction_summary.clone() {
+            self.set_next_compaction_summary(summary);
+            return;
+        }
+        self.task_complete_pending = true;
+        self.request_redraw();
+    }
+
+    fn refresh_compaction_summary_from_rollout(&mut self) {
+        let Some(path) = self.current_rollout_path.clone() else {
+            return;
+        };
+
+        if cfg!(test) {
+            return;
+        }
+
+        let tx = self.app_event_tx.clone();
+        std::thread::spawn(move || {
+            // Rollout writing can lag behind the ContextCompacted event.
+            // Retry briefly so the summary reliably appears after `/compact`.
+            for attempt in 0..5 {
+                let text = match std::fs::read_to_string(&path) {
+                    Ok(text) => text,
+                    Err(err) => {
+                        tracing::warn!("failed to read rollout for compaction summary: {err}");
+                        return;
+                    }
+                };
+
+                let summary = text
+                    .lines()
+                    .rev()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .find_map(|line| {
+                        let Ok(entry) =
+                            serde_json::from_str::<codex_protocol::protocol::RolloutLine>(line)
+                        else {
+                            return None;
+                        };
+
+                        match entry.item {
+                            codex_protocol::protocol::RolloutItem::Compacted(compacted) => {
+                                Some(if !compacted.message.is_empty() {
+                                    compact::compacted_summary_text(&compacted)
+                                } else {
+                                    compact::remote_compacted_summary_text(&compacted)
+                                })
+                            }
+                            _ => None,
+                        }
+                    });
+
+                if let Some(summary) = summary {
+                    tx.send(AppEvent::CompactionSummaryAvailable(summary));
+                    return;
+                }
+
+                if attempt < 4 {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        });
     }
 
     fn set_skills_from_outcome(&mut self, outcome: Option<&SkillLoadOutcomeInfo>) {
@@ -1330,6 +1422,7 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
+            next_compaction_summary: None,
         };
 
         widget.prefetch_rate_limits();
@@ -1415,6 +1508,7 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
+            next_compaction_summary: None,
         };
 
         widget.prefetch_rate_limits();
@@ -1899,7 +1993,7 @@ impl ChatWidget {
                 self.on_entered_review_mode(review_request)
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
-            EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
+            EventMsg::ContextCompacted(_) => self.on_context_compacted(),
             EventMsg::RawResponseItem(_)
             | EventMsg::ItemStarted(_)
             | EventMsg::ItemCompleted(_)

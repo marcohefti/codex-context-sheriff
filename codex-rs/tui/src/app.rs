@@ -681,6 +681,9 @@ impl App {
             AppEvent::CommitTick => {
                 self.chat_widget.on_commit_tick();
             }
+            AppEvent::CompactionSummaryAvailable(summary) => {
+                self.chat_widget.set_next_compaction_summary(summary);
+            }
             AppEvent::CodexEvent(event) => {
                 if self.suppress_shutdown_complete
                     && matches!(event.msg, EventMsg::ShutdownComplete)

@@ -22,6 +22,7 @@ use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -154,6 +155,14 @@ impl ConversationManager {
         let initial_history = RolloutRecorder::get_rollout_history(&rollout_path).await?;
         self.resume_conversation_with_history(config, initial_history, auth_manager)
             .await
+    }
+
+    pub async fn read_rollout_items_for_resume(
+        rollout_path: &Path,
+    ) -> CodexResult<Vec<RolloutItem>> {
+        Ok(RolloutRecorder::get_rollout_history(rollout_path)
+            .await?
+            .get_rollout_items())
     }
 
     pub async fn resume_conversation_with_history(
