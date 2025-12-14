@@ -100,8 +100,65 @@ fn snapshot(percent: f64) -> RateLimitSnapshot {
     }
 }
 
-#[test]
-fn resumed_initial_messages_render_history() {
+#[tokio::test]
+async fn compaction_summary_is_visible_once_after_context_compacted() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None);
+
+    let conversation_id = ConversationId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+
+    std::fs::write(rollout_file.path(), "").expect("write fake rollout");
+
+    let configured = codex_core::protocol::SessionConfiguredEvent {
+        session_id: conversation_id,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::ReadOnly,
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: None,
+        skill_load_outcome: None,
+        rollout_path: rollout_file.path().to_path_buf(),
+    };
+
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+
+    // Allow background rollout reader to report compaction summary.
+    drain_insert_history(&mut rx);
+
+    chat.handle_codex_event(Event {
+        id: "compact".into(),
+        msg: EventMsg::ContextCompacted(codex_core::protocol::ContextCompactedEvent {}),
+    });
+
+    // Simulate a delayed rollout read where the summary arrives shortly after the
+    // ContextCompacted event.
+    tokio::task::yield_now().await;
+    chat.set_next_compaction_summary("VISIBLE_SUMMARY".to_string());
+
+    let cells = drain_insert_history(&mut rx);
+    let text_blob = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let count = text_blob.matches(COMPACTION_SUMMARY_LABEL).count();
+    assert_eq!(count, 1, "expected exactly one compaction summary entry");
+    assert!(
+        text_blob.contains("VISIBLE_SUMMARY"),
+        "expected compaction summary text to be visible"
+    );
+}
+
+#[tokio::test]
+async fn resumed_initial_messages_render_history() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(None);
 
     let conversation_id = ConversationId::new();
@@ -133,6 +190,8 @@ fn resumed_initial_messages_render_history() {
         id: "initial".into(),
         msg: EventMsg::SessionConfigured(configured),
     });
+
+    tokio::task::yield_now().await;
 
     let cells = drain_insert_history(&mut rx);
     let mut merged_lines = Vec::new();
@@ -445,6 +504,7 @@ fn make_chatwidget_manual(
         last_rendered_width: std::cell::Cell::new(None),
         feedback: codex_feedback::CodexFeedback::new(),
         current_rollout_path: None,
+        next_compaction_summary: None,
     };
     (widget, rx, op_rx)
 }

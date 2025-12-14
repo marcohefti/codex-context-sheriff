@@ -32,6 +32,39 @@ pub const SUMMARIZATION_PROMPT: &str = include_str!("../templates/compact/prompt
 pub const SUMMARY_PREFIX: &str = include_str!("../templates/compact/summary_prefix.md");
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 
+pub fn compacted_summary_text(compacted: &CompactedItem) -> String {
+    compacted.message.clone()
+}
+
+pub fn remote_compacted_summary_text(compacted: &CompactedItem) -> String {
+    let Some(replacement_history) = &compacted.replacement_history else {
+        return missing_remote_summary();
+    };
+
+    let mut found_summary = None;
+    for item in replacement_history {
+        if let ResponseItem::Message { role, content, .. } = item
+            && role == "user"
+            && found_summary.is_none()
+        {
+            found_summary = content_items_to_text(content).map(|s| s.trim().to_string());
+        }
+
+        if matches!(item, ResponseItem::Compaction { .. }) {
+            break;
+        }
+    }
+
+    match found_summary {
+        Some(summary) if !summary.is_empty() => summary,
+        _ => missing_remote_summary(),
+    }
+}
+
+fn missing_remote_summary() -> String {
+    "(compaction summary unavailable)".to_string()
+}
+
 pub(crate) fn should_use_remote_compact_task(
     session: &Session,
     provider: &ModelProviderInfo,
@@ -219,6 +252,54 @@ pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<String> {
 
 pub(crate) fn is_summary_message(message: &str) -> bool {
     message.starts_with(format!("{SUMMARY_PREFIX}\n").as_str())
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+    use codex_protocol::models::ContentItem;
+
+    #[test]
+    fn compacted_summary_text_returns_message() {
+        let compacted = CompactedItem {
+            message: "LOCAL_SUMMARY".to_string(),
+            replacement_history: None,
+        };
+        assert_eq!(
+            compacted_summary_text(&compacted),
+            "LOCAL_SUMMARY".to_string()
+        );
+    }
+
+    #[test]
+    fn remote_compacted_summary_text_extracts_user_message_before_compaction_item() {
+        let compacted = CompactedItem {
+            message: String::new(),
+            replacement_history: Some(vec![
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "REMOTE_SUMMARY".to_string(),
+                    }],
+                },
+                ResponseItem::Compaction {
+                    encrypted_content: "ENCRYPTED".to_string(),
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "AFTER".to_string(),
+                    }],
+                },
+            ]),
+        };
+        assert_eq!(
+            remote_compacted_summary_text(&compacted),
+            "REMOTE_SUMMARY".to_string()
+        );
+    }
 }
 
 pub(crate) fn build_compacted_history(

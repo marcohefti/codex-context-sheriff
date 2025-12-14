@@ -693,6 +693,27 @@ pub(crate) fn new_session_info(
     SessionInfoCell(CompositeHistoryCell { parts })
 }
 
+pub(crate) fn new_compaction_summary(summary: String, label: &str) -> PlainHistoryCell {
+    let mut rendered: Vec<Line<'static>> = Vec::new();
+    append_markdown(&summary, None, &mut rendered);
+
+    let rendered = rendered
+        .into_iter()
+        .map(|mut line| {
+            line.style = line.style.dim();
+            line
+        })
+        .collect::<Vec<_>>();
+
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(rendered.len() + 1);
+    lines.push(format!("{label}:").magenta().bold().into());
+    lines.extend(rendered);
+
+    PlainHistoryCell {
+        lines: prefix_lines(lines, "› ".bold().dim(), "  ".into()),
+    }
+}
+
 pub(crate) fn new_user_prompt(message: String) -> UserHistoryCell {
     UserHistoryCell { message }
 }
@@ -1328,7 +1349,7 @@ impl HistoryCell for PlanUpdateCell {
         let render_step = |status: &StepStatus, text: &str| -> Vec<Line<'static>> {
             let (box_str, step_style) = match status {
                 StepStatus::Completed => ("✔ ", Style::default().crossed_out().dim()),
-                StepStatus::InProgress => ("□ ", Style::default().cyan().bold()),
+                StepStatus::InProgress => ("□ ", Style::default().dim()),
                 StepStatus::Pending => ("□ ", Style::default().dim()),
             };
             let wrap_width = (width as usize)
