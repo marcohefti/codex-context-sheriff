@@ -12,6 +12,7 @@ use crate::client_common::REVIEW_PROMPT;
 use crate::compact;
 use crate::compact::run_inline_auto_compact_task;
 use crate::compact::should_use_remote_compact_task;
+use crate::compact_preview::CompactionPreview;
 use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::exec_policy::load_exec_policy_for_features;
 use crate::features::Feature;
@@ -346,6 +347,8 @@ pub(crate) struct Session {
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) services: SessionServices,
     next_internal_sub_id: AtomicU64,
+
+    pending_compaction_preview: Mutex<Option<CompactionPreview>>,
 }
 
 /// The context needed for a single turn of the conversation.
@@ -469,6 +472,21 @@ pub(crate) struct SessionSettingsUpdate {
 }
 
 impl Session {
+    pub(crate) async fn set_pending_compaction_preview(&self, preview: CompactionPreview) {
+        let mut guard = self.pending_compaction_preview.lock().await;
+        *guard = Some(preview);
+    }
+
+    pub(crate) async fn take_pending_compaction_preview(&self) -> Option<CompactionPreview> {
+        let mut guard = self.pending_compaction_preview.lock().await;
+        guard.take()
+    }
+
+    pub(crate) async fn clear_pending_compaction_preview(&self) {
+        let mut guard = self.pending_compaction_preview.lock().await;
+        *guard = None;
+    }
+
     /// Don't expand the number of mutated arguments on config. We are in the process of getting rid of it.
     fn build_per_turn_config(session_configuration: &SessionConfiguration) -> Config {
         // todo(aibrahim): store this state somewhere else so we don't need to mut config
@@ -677,6 +695,8 @@ impl Session {
             active_turn: Mutex::new(None),
             services,
             next_internal_sub_id: AtomicU64::new(0),
+
+            pending_compaction_preview: Mutex::new(None),
         });
 
         // Dispatch the SessionConfiguredEvent first and then report any errors.
@@ -729,6 +749,10 @@ impl Session {
 
         // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
         sess.record_initial_history(initial_history).await;
+
+        // Preview artifacts are intentionally ephemeral: they should not survive
+        // resume/reconstruction.
+        sess.clear_pending_compaction_preview().await;
 
         Ok(sess)
     }
@@ -1591,6 +1615,12 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             Op::Compact => {
                 handlers::compact(&sess, sub.id.clone()).await;
             }
+            Op::CompactPreview => {
+                handlers::compact_preview(&sess, sub.id.clone()).await;
+            }
+            Op::CompactApply => {
+                handlers::compact_apply(&sess, sub.id.clone()).await;
+            }
             Op::RunUserShellCommand { command } => {
                 handlers::run_user_shell_command(
                     &sess,
@@ -1670,6 +1700,8 @@ mod handlers {
         op: Op,
         previous_context: &mut Option<Arc<TurnContext>>,
     ) {
+        sess.clear_pending_compaction_preview().await;
+
         let (items, updates) = match op {
             Op::UserTurn {
                 cwd,
@@ -1888,6 +1920,8 @@ mod handlers {
     }
 
     pub async fn compact(sess: &Arc<Session>, sub_id: String) {
+        // Manual /compact invalidates any pending preview.
+        sess.clear_pending_compaction_preview().await;
         let turn_context = sess
             .new_turn_with_sub_id(sub_id, SessionSettingsUpdate::default())
             .await;
@@ -1898,6 +1932,133 @@ mod handlers {
                 text: turn_context.compact_prompt().to_string(),
             }],
             CompactTask,
+        )
+        .await;
+    }
+
+    pub async fn compact_preview(sess: &Arc<Session>, sub_id: String) {
+        let turn_context = sess
+            .new_turn_with_sub_id(sub_id, SessionSettingsUpdate::default())
+            .await;
+
+        let start_event = EventMsg::TaskStarted(codex_protocol::protocol::TaskStartedEvent {
+            model_context_window: turn_context.client.get_model_context_window(),
+        });
+        sess.send_event(&turn_context, start_event).await;
+
+        let session = Arc::clone(sess);
+        let tc = Arc::clone(&turn_context);
+
+        let preview = if crate::compact::should_use_remote_compact_task(
+            session.as_ref(),
+            &tc.client.get_provider(),
+        ) {
+            match crate::compact_remote_preview::run_remote_compact_preview(session, tc).await {
+                Ok(preview) => preview,
+                Err(err) => {
+                    let event = EventMsg::Error(
+                        err.to_error_event(Some("Error running compaction preview".to_string())),
+                    );
+                    sess.send_event(&turn_context, event).await;
+
+                    sess.send_event(
+                        &turn_context,
+                        EventMsg::TaskComplete(codex_protocol::protocol::TaskCompleteEvent {
+                            last_agent_message: None,
+                        }),
+                    )
+                    .await;
+                    return;
+                }
+            }
+        } else {
+            let prompt = turn_context.compact_prompt().to_string();
+            let input = vec![UserInput::Text { text: prompt }];
+            match crate::compact_local_preview::run_local_compact_preview(session, tc, input).await
+            {
+                Ok(preview) => preview,
+                Err(err) => {
+                    let event = EventMsg::Error(
+                        err.to_error_event(Some("Error running compaction preview".to_string())),
+                    );
+                    sess.send_event(&turn_context, event).await;
+
+                    sess.send_event(
+                        &turn_context,
+                        EventMsg::TaskComplete(codex_protocol::protocol::TaskCompleteEvent {
+                            last_agent_message: None,
+                        }),
+                    )
+                    .await;
+                    return;
+                }
+            }
+        };
+
+        sess.set_pending_compaction_preview(preview.clone()).await;
+
+        let output = crate::compact_preview_output::render_compaction_preview(&preview);
+        sess.send_event(
+            &turn_context,
+            EventMsg::ContextCompactionPreview(
+                codex_protocol::protocol::ContextCompactionPreviewEvent { message: output },
+            ),
+        )
+        .await;
+
+        sess.send_event(
+            &turn_context,
+            EventMsg::TaskComplete(codex_protocol::protocol::TaskCompleteEvent {
+                last_agent_message: None,
+            }),
+        )
+        .await;
+    }
+
+    pub async fn compact_apply(sess: &Arc<Session>, sub_id: String) {
+        let turn_context = sess
+            .new_turn_with_sub_id(sub_id, SessionSettingsUpdate::default())
+            .await;
+
+        let start_event = EventMsg::TaskStarted(codex_protocol::protocol::TaskStartedEvent {
+            model_context_window: turn_context.client.get_model_context_window(),
+        });
+        sess.send_event(&turn_context, start_event).await;
+
+        let Some(preview) = sess.take_pending_compaction_preview().await else {
+            sess.notify_background_event(
+                turn_context.as_ref(),
+                "No pending compaction preview. Run /compact --preview first.".to_string(),
+            )
+            .await;
+            sess.send_event(
+                &turn_context,
+                EventMsg::TaskComplete(codex_protocol::protocol::TaskCompleteEvent {
+                    last_agent_message: None,
+                }),
+            )
+            .await;
+            return;
+        };
+
+        if let Err(err) = crate::compact_apply::apply_compaction_preview(
+            Arc::clone(sess),
+            Arc::clone(&turn_context),
+            preview,
+        )
+        .await
+        {
+            let event = EventMsg::Error(
+                err.to_error_event(Some("Error applying compaction preview".to_string())),
+            );
+            sess.send_event(&turn_context, event).await;
+        }
+
+        sess.send_event(
+            &turn_context,
+            EventMsg::TaskComplete(codex_protocol::protocol::TaskCompleteEvent {
+                last_agent_message: None,
+            }),
         )
         .await;
     }
@@ -2622,6 +2783,7 @@ mod tests {
     use crate::shell::default_user_shell;
     use crate::tools::format_exec_output_str;
     use codex_protocol::models::FunctionCallOutputPayload;
+    use pretty_assertions::assert_eq;
 
     use crate::protocol::CompactedItem;
     use crate::protocol::CreditsSnapshot;
@@ -2648,7 +2810,6 @@ mod tests {
 
     use mcp_types::ContentBlock;
     use mcp_types::TextContent;
-    use pretty_assertions::assert_eq;
     use serde::Deserialize;
     use serde_json::json;
     use std::path::PathBuf;
@@ -3048,6 +3209,8 @@ mod tests {
             active_turn: Mutex::new(None),
             services,
             next_internal_sub_id: AtomicU64::new(0),
+
+            pending_compaction_preview: Mutex::new(None),
         };
 
         (session, turn_context)
@@ -3138,6 +3301,8 @@ mod tests {
             active_turn: Mutex::new(None),
             services,
             next_internal_sub_id: AtomicU64::new(0),
+
+            pending_compaction_preview: Mutex::new(None),
         });
 
         (session, turn_context, rx_event)
@@ -3636,5 +3801,36 @@ mod tests {
         );
 
         pretty_assertions::assert_eq!(output, expected);
+    }
+
+    #[tokio::test]
+    async fn compact_apply_without_preview_emits_noninteractive_error() {
+        let (sess, _tc, rx) = make_session_and_context_with_rx();
+
+        handlers::compact_apply(&sess, "sub-1".to_string()).await;
+
+        // Session turn is created internally; we only assert that an error-like
+        // background event is emitted and the pending preview remains empty.
+        assert!(sess.take_pending_compaction_preview().await.is_none());
+
+        // compact_apply now emits TaskStarted first; skip until we see the user-facing error.
+        loop {
+            let evt = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("timeout waiting for event")
+                .expect("event should be received");
+
+            match evt.msg {
+                EventMsg::BackgroundEvent(e) => {
+                    assert_eq!(
+                        e.message,
+                        "No pending compaction preview. Run /compact --preview first.".to_string()
+                    );
+                    break;
+                }
+                EventMsg::TaskStarted(_) | EventMsg::TaskComplete(_) => continue,
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
     }
 }
