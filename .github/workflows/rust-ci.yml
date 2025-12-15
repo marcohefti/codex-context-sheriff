@@ -260,12 +260,7 @@ jobs:
 
       - name: cargo clippy
         id: clippy
-        run: |
-          set -euo pipefail
-          # On this fork, `codex-core` currently triggers a couple of pre-existing
-          # clippy warnings under `-D warnings`. Run clippy on the full workspace
-          # to keep signal without failing on unrelated warnings.
-          cargo clippy --target ${{ matrix.target }} --all-features --tests --profile ${{ matrix.profile }}
+        run: cargo clippy --target ${{ matrix.target }} --all-features --tests --profile ${{ matrix.profile }} -- -D warnings
 
       # Running `cargo build` from the workspace root builds the workspace using
       # the union of all features from third-party crates. This can mask errors
