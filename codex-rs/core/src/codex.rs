@@ -532,17 +532,10 @@ impl Session {
             return None;
         }
 
-        let Some(repo_root) = repo_root else {
-            return None;
-        };
-        let Some(baseline_snapshot) = baseline_snapshot else {
-            return None;
-        };
+        let repo_root = repo_root?;
+        let baseline_snapshot = baseline_snapshot?;
 
-        let Some(current_snapshot) = worktree_change_notice::snapshot_dirty_paths(&repo_root).await
-        else {
-            return None;
-        };
+        let current_snapshot = worktree_change_notice::snapshot_dirty_paths(&repo_root).await?;
 
         let external_paths = worktree_change_notice::compute_external_changed_paths_unattributed(
             &baseline_snapshot,
@@ -1932,18 +1925,17 @@ mod handlers {
 
         let current_context = sess.new_turn_with_sub_id(sub_id, updates).await;
 
-        if should_soft_pause {
-            if let Some(message) = sess
+        if should_soft_pause
+            && let Some(message) = sess
                 .worktree_change_soft_pause_preflight(&current_context)
                 .await
-            {
-                sess.send_event(
-                    current_context.as_ref(),
-                    EventMsg::SoftPause(SoftPauseEvent { message }),
-                )
-                .await;
-                return;
-            }
+        {
+            sess.send_event(
+                current_context.as_ref(),
+                EventMsg::SoftPause(SoftPauseEvent { message }),
+            )
+            .await;
+            return;
         }
 
         // Keep the non-blocking warning (in addition to the soft pause) so the user
