@@ -556,6 +556,15 @@ impl Session {
     }
 
     pub(crate) async fn maybe_emit_worktree_change_warning(&self, turn_context: &TurnContext) {
+        // Worktree change warnings are an interactive UX affordance intended for
+        // humans using the CLI/TUI. Skip for VSCode/app-server sessions.
+        if matches!(
+            turn_context.client.get_session_source(),
+            SessionSource::VSCode
+        ) {
+            return;
+        }
+
         if turn_context
             .client
             .config()
