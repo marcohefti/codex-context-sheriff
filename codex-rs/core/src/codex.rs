@@ -69,6 +69,8 @@ use tracing::field;
 use tracing::info;
 use tracing::info_span;
 use tracing::instrument;
+
+use crate::worktree_change_notice;
 use tracing::warn;
 
 use crate::ModelProviderInfo;
@@ -472,6 +474,82 @@ pub(crate) struct SessionSettingsUpdate {
 }
 
 impl Session {
+    pub(crate) async fn maybe_emit_worktree_change_warning(&self, turn_context: &TurnContext) {
+        if turn_context
+            .client
+            .config()
+            .notices
+            .hide_working_tree_change_warning
+            .unwrap_or(false)
+        {
+            return;
+        }
+
+        let (repo_root, baseline_snapshot) = {
+            let state = self.state.lock().await;
+            (
+                state.cached_repo_root_for_worktree_notice.clone(),
+                state.last_worktree_snapshot.clone(),
+            )
+        };
+
+        let Some(repo_root) = repo_root else {
+            return;
+        };
+        let Some(baseline_snapshot) = baseline_snapshot else {
+            return;
+        };
+
+        let Some(current_snapshot) = worktree_change_notice::snapshot_dirty_paths(&repo_root).await
+        else {
+            return;
+        };
+
+        let external_paths = worktree_change_notice::compute_external_changed_paths_unattributed(
+            &baseline_snapshot,
+            &current_snapshot,
+        );
+
+        if !worktree_change_notice::should_warn_external_change(
+            &baseline_snapshot,
+            &current_snapshot,
+            &external_paths,
+        ) {
+            return;
+        }
+
+        let message = worktree_change_notice::format_warning_message(&external_paths);
+        self.send_event(turn_context, EventMsg::Warning(WarningEvent { message }))
+            .await;
+    }
+
+    pub(crate) async fn update_worktree_notice_baseline(&self, turn_context: &TurnContext) {
+        if turn_context
+            .client
+            .config()
+            .notices
+            .hide_working_tree_change_warning
+            .unwrap_or(false)
+        {
+            return;
+        }
+
+        let Some(repo_root) =
+            crate::git_info::resolve_root_git_project_for_trust(turn_context.cwd.as_path())
+        else {
+            return;
+        };
+
+        let Some(snapshot) = worktree_change_notice::snapshot_dirty_paths(&repo_root).await else {
+            return;
+        };
+
+        let mut state = self.state.lock().await;
+        state.cached_repo_root_for_worktree_notice = Some(repo_root);
+        state.last_worktree_snapshot = Some(snapshot);
+    }
+
+
     pub(crate) async fn set_pending_compaction_preview(&self, preview: CompactionPreview) {
         let mut guard = self.pending_compaction_preview.lock().await;
         *guard = Some(preview);
@@ -1702,6 +1780,7 @@ mod handlers {
     ) {
         sess.clear_pending_compaction_preview().await;
 
+        let _is_user_turn = matches!(&op, Op::UserTurn { .. });
         let (items, updates) = match op {
             Op::UserTurn {
                 cwd,
@@ -1729,6 +1808,17 @@ mod handlers {
         };
 
         let current_context = sess.new_turn_with_sub_id(sub_id, updates).await;
+
+        // Emit warning on both `UserTurn` and `UserInput` so the feature works
+        // in frontends that don't send `UserTurn`.
+        let sess_for_notice = Arc::clone(sess);
+        let ctx = Arc::clone(&current_context);
+        tokio::spawn(async move {
+            sess_for_notice
+                .maybe_emit_worktree_change_warning(&ctx)
+                .await;
+        });
+
         current_context
             .client
             .get_otel_manager()

@@ -8,12 +8,15 @@ use crate::protocol::RateLimitSnapshot;
 use crate::protocol::TokenUsage;
 use crate::protocol::TokenUsageInfo;
 use crate::truncate::TruncationPolicy;
+use crate::worktree_change_notice::WorktreeSnapshot;
 
 /// Persistent, session-scoped state previously stored directly on `Session`.
 pub(crate) struct SessionState {
     pub(crate) session_configuration: SessionConfiguration,
     pub(crate) history: ContextManager,
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
+    pub(crate) last_worktree_snapshot: Option<WorktreeSnapshot>,
+    pub(crate) cached_repo_root_for_worktree_notice: Option<std::path::PathBuf>,
 }
 
 impl SessionState {
@@ -24,6 +27,8 @@ impl SessionState {
             session_configuration,
             history,
             latest_rate_limits: None,
+            last_worktree_snapshot: None,
+            cached_repo_root_for_worktree_notice: None,
         }
     }
 

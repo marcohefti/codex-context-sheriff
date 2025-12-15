@@ -102,6 +102,7 @@ mod tasks;
 mod user_notification;
 mod user_shell_command;
 pub mod util;
+mod worktree_change_notice;
 
 pub use apply_patch::CODEX_APPLY_PATCH_ARG1;
 pub use command_safety::is_dangerous_command;

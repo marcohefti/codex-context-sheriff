@@ -173,8 +173,18 @@ impl Session {
             *active = None;
         }
         drop(active);
+
+        // Notify the UI first so turn completion is never delayed by best-effort work
+        // like git snapshotting.
         let event = EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message });
         self.send_event(turn_context.as_ref(), event).await;
+
+        // Best-effort baseline update for the next turn's worktree change warning.
+        // Do not block turn completion on git.
+        let sess = Arc::clone(self);
+        tokio::spawn(async move {
+            sess.update_worktree_notice_baseline(&turn_context).await;
+        });
     }
 
     async fn register_new_active_task(&self, task: RunningTask) {
