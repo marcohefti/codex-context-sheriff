@@ -1610,6 +1610,13 @@ impl ChatWidget {
                             return;
                         }
 
+                        // If a task is running, preserve existing queue behavior: do not
+                        // preflight/pause, just queue the message.
+                        if self.bottom_pane.is_task_running() {
+                            self.queue_user_message(user_message);
+                            return;
+                        }
+
                         self.pending_worktree_warning_draft = Some(user_message);
                         self.submit_op(Op::WorktreeChangePreflight);
                     }
