@@ -303,6 +303,7 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::AgentMessageContentDelta(_)
                     | EventMsg::ReasoningContentDelta(_)
                     | EventMsg::ReasoningRawContentDelta(_)
+                    | EventMsg::SoftPause(_)
                     | EventMsg::UndoStarted(_)
                     | EventMsg::UndoCompleted(_)
                     | EventMsg::ExitedReviewMode(_)

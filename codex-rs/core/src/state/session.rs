@@ -17,6 +17,7 @@ pub(crate) struct SessionState {
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
     pub(crate) last_worktree_snapshot: Option<WorktreeSnapshot>,
     pub(crate) cached_repo_root_for_worktree_notice: Option<std::path::PathBuf>,
+    pub(crate) worktree_change_pause_bypass_once: bool,
 }
 
 impl SessionState {
@@ -29,6 +30,7 @@ impl SessionState {
             latest_rate_limits: None,
             last_worktree_snapshot: None,
             cached_repo_root_for_worktree_notice: None,
+            worktree_change_pause_bypass_once: false,
         }
     }
 

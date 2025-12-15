@@ -103,6 +103,8 @@ mod user_notification;
 mod user_shell_command;
 pub mod util;
 mod worktree_change_notice;
+#[cfg(test)]
+mod worktree_soft_pause_tests;
 
 pub use apply_patch::CODEX_APPLY_PATCH_ARG1;
 pub use command_safety::is_dangerous_command;

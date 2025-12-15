@@ -87,13 +87,13 @@ pub(crate) fn should_warn_external_change(
 }
 
 pub(crate) fn format_warning_message(external_paths: &[String]) -> String {
-    let mut message =
-        "Working tree changed outside this session since last turn. If this was intentional, tell Codex what changed."
-            .to_string();
+    let mut message = "Working tree changed since last turn.".to_string();
 
     if external_paths.is_empty() {
         return message;
     }
+
+    message.push_str("\nChanged files (outside this session):");
 
     let mut display: Vec<String> = external_paths.to_vec();
     display.sort();
@@ -107,6 +107,8 @@ pub(crate) fn format_warning_message(external_paths: &[String]) -> String {
         message.push_str("- ");
         message.push_str(&path);
     }
+
+    message.push_str("\n\nConfig: set [notice].hide_working_tree_change_warning = true");
 
     message
 }
