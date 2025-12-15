@@ -798,10 +798,18 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
         let make_row = |spans: Vec<Span<'static>>| Line::from(spans);
 
-        // Title line rendered inside the box: ">_ OpenAI Codex (vX)"
+        let branding = if inner_width >= 52 {
+            "Codex (Context Sheriff)"
+        } else if inner_width >= 34 {
+            "Codex (CS)"
+        } else {
+            "Codex"
+        };
+
+        // Title line rendered inside the box: ">_ <branding> (vX)"
         let title_spans: Vec<Span<'static>> = vec![
             Span::from(">_ ").dim(),
-            Span::from("OpenAI Codex").bold(),
+            Span::from(branding).bold(),
             Span::from(" ").dim(),
             Span::from(format!("(v{})", self.version)).dim(),
         ];

@@ -1,8 +1,18 @@
 # Codex CLI (Rust Implementation)
 
+## codex-context-sheriff fork
+
+This repository is a fork of the open source Codex CLI focused on **Context Sheriff** UX improvements: better observability and guardrails around compaction and working-tree drift.
+
+If you want to learn more about the fork, start with `docs/context-sheriff.md`.
+
 We provide Codex CLI as a standalone, native executable to ensure a zero-dependency install.
 
 ## Installing Codex
+
+Note: this fork is not distributed via `npm`/Homebrew releases. To use `codex-context-sheriff` today, clone the repo and build from source.
+
+### Upstream Codex CLI
 
 Today, the easiest way to install Codex is via `npm`:
 
@@ -12,6 +22,15 @@ codex
 ```
 
 You can also install via Homebrew (`brew install --cask codex`) or download a platform-specific release directly from our [GitHub Releases](https://github.com/openai/codex/releases).
+
+### Build this fork from source
+
+```shell
+git clone https://github.com/marcohefti/codex-context-sheriff
+cd codex-context-sheriff/codex-rs
+cargo build --release
+./target/release/codex --help
+```
 
 ## Documentation quickstart
 
