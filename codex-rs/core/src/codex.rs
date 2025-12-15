@@ -1868,7 +1868,6 @@ mod handlers {
     use codex_protocol::protocol::ReviewDecision;
     use codex_protocol::protocol::ReviewRequest;
     use codex_protocol::protocol::SessionSource;
-    use codex_protocol::protocol::SoftPauseEvent;
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::WarningEvent;
 
@@ -1896,7 +1895,6 @@ mod handlers {
     ) {
         sess.clear_pending_compaction_preview().await;
 
-        let should_soft_pause = matches!(&op, Op::UserTurn { .. } | Op::UserInput { .. });
         let (items, updates) = match op {
             Op::UserTurn {
                 cwd,
@@ -1924,19 +1922,6 @@ mod handlers {
         };
 
         let current_context = sess.new_turn_with_sub_id(sub_id, updates).await;
-
-        if should_soft_pause
-            && let Some(message) = sess
-                .worktree_change_soft_pause_preflight(&current_context)
-                .await
-        {
-            sess.send_event(
-                current_context.as_ref(),
-                EventMsg::SoftPause(SoftPauseEvent { message }),
-            )
-            .await;
-            return;
-        }
 
         // Keep the non-blocking warning (in addition to the soft pause) so the user
         // still sees it when the frontend doesn't support soft pause.
