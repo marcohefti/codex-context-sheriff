@@ -557,7 +557,9 @@ impl Session {
             return None;
         }
 
-        Some(Self::format_worktree_change_soft_pause_message(&external_paths))
+        Some(Self::format_worktree_change_soft_pause_message(
+            &external_paths,
+        ))
     }
 
     pub(crate) async fn maybe_emit_worktree_change_warning(&self, turn_context: &TurnContext) {
@@ -641,7 +643,6 @@ impl Session {
         state.cached_repo_root_for_worktree_notice = Some(repo_root);
         state.last_worktree_snapshot = Some(snapshot);
     }
-
 
     pub(crate) async fn set_pending_compaction_preview(&self, preview: CompactionPreview) {
         let mut guard = self.pending_compaction_preview.lock().await;
@@ -1953,8 +1954,7 @@ mod handlers {
         if matches!(
             current_context.client.get_session_source(),
             SessionSource::Exec | SessionSource::Mcp
-        )
-        {
+        ) {
             let sess_for_notice = Arc::clone(sess);
             let ctx = Arc::clone(&current_context);
             tokio::spawn(async move {
