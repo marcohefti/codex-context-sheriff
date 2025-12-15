@@ -52,6 +52,8 @@ use codex_core::features::is_known_feature_key;
 #[clap(
     author,
     version,
+    about = "Codex CLI (codex-context-sheriff fork)",
+    long_about = "Codex CLI (codex-context-sheriff fork)\n\nThis fork adds subtle UI-only observability + guardrail improvements while keeping Codex behavior intact.",
     // If a sub‑command is given, ignore requirements of the default args.
     subcommand_negates_reqs = true,
     // The executable is sometimes invoked via a platform‑specific name like
