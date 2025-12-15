@@ -323,6 +323,8 @@ pub(crate) struct ChatWidget {
     suppress_session_configured_redraw: bool,
     // User messages queued while a turn is in progress
     queued_user_messages: VecDeque<UserMessage>,
+    paused_for_worktree_warning: bool,
+    pending_worktree_warning_draft: Option<UserMessage>,
     // Pending notification to show when unfocused on next Draw
     pending_notification: Option<Notification>,
     // Simple review mode flag; used to adjust layout and banners.
@@ -1421,6 +1423,8 @@ impl ChatWidget {
             retry_status_header: None,
             conversation_id: None,
             queued_user_messages: VecDeque::new(),
+            paused_for_worktree_warning: false,
+            pending_worktree_warning_draft: None,
             show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
             pending_notification: None,
@@ -1507,6 +1511,8 @@ impl ChatWidget {
             retry_status_header: None,
             conversation_id: None,
             queued_user_messages: VecDeque::new(),
+            paused_for_worktree_warning: false,
+            pending_worktree_warning_draft: None,
             show_welcome_banner: false,
             suppress_session_configured_redraw: true,
             pending_notification: None,
@@ -1584,12 +1590,35 @@ impl ChatWidget {
             _ => {
                 match self.bottom_pane.handle_key_event(key_event) {
                     InputResult::Submitted(text) => {
-                        // If a task is running, queue the user input to be sent after the turn completes.
                         let user_message = UserMessage {
                             text,
                             image_paths: self.bottom_pane.take_recent_submission_images(),
                         };
-                        self.queue_user_message(user_message);
+
+                        // Second Enter while paused means "ignore once" and proceed.
+                        if self.paused_for_worktree_warning {
+                            self.paused_for_worktree_warning = false;
+                            self.pending_worktree_warning_draft = None;
+                            self.submit_op(Op::WorktreeChangeContinue);
+                            self.queue_user_message(user_message);
+                            return;
+                        }
+
+                        // Preflight the worktree-change warning before sending input so we can
+                        // restore the draft in-place if the backend asks us to pause.
+                        if user_message.text.is_empty() && user_message.image_paths.is_empty() {
+                            return;
+                        }
+
+                        // If a task is running, preserve existing queue behavior: do not
+                        // preflight/pause, just queue the message.
+                        if self.bottom_pane.is_task_running() {
+                            self.queue_user_message(user_message);
+                            return;
+                        }
+
+                        self.pending_worktree_warning_draft = Some(user_message);
+                        self.submit_op(Op::WorktreeChangePreflight);
                     }
                     InputResult::Command(cmd) => {
                         self.dispatch_command(cmd);
@@ -1853,11 +1882,18 @@ impl ChatWidget {
         }
     }
 
+    fn take_pending_worktree_warning_draft(&mut self) -> Option<UserMessage> {
+        self.pending_worktree_warning_draft.take()
+    }
+
     fn submit_user_message(&mut self, user_message: UserMessage) {
         let UserMessage { text, image_paths } = user_message;
         if text.is_empty() && image_paths.is_empty() {
             return;
         }
+
+        // If this message was held for a worktree-change preflight, consume the draft.
+        self.pending_worktree_warning_draft = None;
 
         let mut items: Vec<UserInput> = Vec::new();
 
@@ -1984,7 +2020,15 @@ impl ChatWidget {
                 self.set_token_info(ev.info);
                 self.on_rate_limit_snapshot(ev.rate_limits);
             }
-            EventMsg::Warning(WarningEvent { message }) => self.on_warning(message),
+            EventMsg::Warning(WarningEvent { message }) => {
+                // This can occur as the response to a worktree-change preflight.
+                // In that case, we want to show the warning and then proceed with
+                // sending the already-submitted draft.
+                self.on_warning(message);
+                if let Some(draft) = self.take_pending_worktree_warning_draft() {
+                    self.queue_user_message(draft);
+                }
+            }
             EventMsg::Error(ErrorEvent { message, .. }) => self.on_error(message),
             EventMsg::McpStartupUpdate(ev) => self.on_mcp_startup_update(ev),
             EventMsg::McpStartupComplete(ev) => self.on_mcp_startup_complete(ev),
@@ -1999,6 +2043,14 @@ impl ChatWidget {
                     self.on_interrupted_turn(ev.reason);
                 }
             },
+            EventMsg::SoftPause(ev) => {
+                self.paused_for_worktree_warning = true;
+                self.add_to_history(history_cell::new_warning_event(ev.message));
+                if let Some(draft) = self.pending_worktree_warning_draft.as_ref() {
+                    self.bottom_pane.set_composer_text(draft.text.clone());
+                }
+                self.request_redraw();
+            }
             EventMsg::PlanUpdate(update) => self.on_plan_update(update),
             EventMsg::ExecApprovalRequest(ev) => {
                 // For replayed events, synthesize an empty id (these should not occur).

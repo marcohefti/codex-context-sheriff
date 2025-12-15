@@ -496,6 +496,8 @@ fn make_chatwidget_manual(
         frame_requester: FrameRequester::test_dummy(),
         show_welcome_banner: true,
         queued_user_messages: VecDeque::new(),
+        paused_for_worktree_warning: false,
+        pending_worktree_warning_draft: None,
         suppress_session_configured_redraw: false,
         pending_notification: None,
         is_review_mode: false,

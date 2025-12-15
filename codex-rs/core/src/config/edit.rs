@@ -28,6 +28,8 @@ pub enum ConfigEdit {
     SetNoticeHideWorldWritableWarning(bool),
     /// Toggle the rate limit model nudge acknowledgement flag.
     SetNoticeHideRateLimitModelNudge(bool),
+    /// Toggle the working tree change warning opt-out flag.
+    SetNoticeHideWorkingTreeChangeWarning(bool),
     /// Toggle the Windows onboarding acknowledgement flag.
     SetWindowsWslSetupAcknowledged(bool),
     /// Toggle the model migration prompt acknowledgement flag.
@@ -258,6 +260,12 @@ impl ConfigDocument {
                 &[Notice::TABLE_KEY, "hide_rate_limit_model_nudge"],
                 value(*acknowledged),
             )),
+            ConfigEdit::SetNoticeHideWorkingTreeChangeWarning(acknowledged) => Ok(self
+                .write_value(
+                    Scope::Global,
+                    &[Notice::TABLE_KEY, "hide_working_tree_change_warning"],
+                    value(*acknowledged),
+                )),
             ConfigEdit::SetNoticeHideModelMigrationPrompt(migration_config, acknowledged) => {
                 Ok(self.write_value(
                     Scope::Global,
@@ -517,6 +525,14 @@ impl ConfigEditsBuilder {
     pub fn set_hide_rate_limit_model_nudge(mut self, acknowledged: bool) -> Self {
         self.edits
             .push(ConfigEdit::SetNoticeHideRateLimitModelNudge(acknowledged));
+        self
+    }
+
+    pub fn set_hide_working_tree_change_warning(mut self, acknowledged: bool) -> Self {
+        self.edits
+            .push(ConfigEdit::SetNoticeHideWorkingTreeChangeWarning(
+                acknowledged,
+            ));
         self
     }
 

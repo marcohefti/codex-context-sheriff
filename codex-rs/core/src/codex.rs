@@ -69,6 +69,8 @@ use tracing::field;
 use tracing::info;
 use tracing::info_span;
 use tracing::instrument;
+
+use crate::worktree_change_notice;
 use tracing::warn;
 
 use crate::ModelProviderInfo;
@@ -472,6 +474,178 @@ pub(crate) struct SessionSettingsUpdate {
 }
 
 impl Session {
+    fn format_worktree_change_soft_pause_message(external_paths: &[String]) -> String {
+        let mut message = "Working tree changed since last turn.".to_string();
+        message.push_str("\nPress Enter again to send anyway (or edit first).\n");
+
+        if external_paths.is_empty() {
+            message.push_str("\n\nConfig: set [notice].hide_working_tree_change_warning = true");
+            return message;
+        }
+
+        message.push_str("\nChanged files (outside this session):");
+
+        let mut display: Vec<String> = external_paths.to_vec();
+        display.sort();
+        if display.len() > 5 {
+            display.truncate(5);
+            display[4] = "...".to_string();
+        }
+
+        for path in display {
+            message.push('\n');
+            message.push_str("- ");
+            message.push_str(&path);
+        }
+
+        message.push_str("\n\nConfig: set [notice].hide_working_tree_change_warning = true");
+
+        message
+    }
+
+    pub(crate) async fn worktree_change_soft_pause_preflight(
+        &self,
+        turn_context: &TurnContext,
+    ) -> Option<String> {
+        if turn_context
+            .client
+            .config()
+            .notices
+            .hide_working_tree_change_warning
+            .unwrap_or(false)
+        {
+            return None;
+        }
+
+        let (repo_root, baseline_snapshot, bypass_once) = {
+            let state = self.state.lock().await;
+            (
+                state.cached_repo_root_for_worktree_notice.clone(),
+                state.last_worktree_snapshot.clone(),
+                state.worktree_change_pause_bypass_once,
+            )
+        };
+
+        if bypass_once {
+            let mut state = self.state.lock().await;
+            state.worktree_change_pause_bypass_once = false;
+            return None;
+        }
+
+        let repo_root = repo_root?;
+        let baseline_snapshot = baseline_snapshot?;
+
+        let current_snapshot = worktree_change_notice::snapshot_dirty_paths(&repo_root).await?;
+
+        let external_paths = worktree_change_notice::compute_external_changed_paths_unattributed(
+            &baseline_snapshot,
+            &current_snapshot,
+        );
+
+        if !worktree_change_notice::should_warn_external_change(
+            &baseline_snapshot,
+            &current_snapshot,
+            &external_paths,
+        ) {
+            return None;
+        }
+
+        Some(Self::format_worktree_change_soft_pause_message(
+            &external_paths,
+        ))
+    }
+
+    pub(crate) async fn maybe_emit_worktree_change_warning(&self, turn_context: &TurnContext) {
+        // Worktree change warnings are an interactive UX affordance intended for
+        // humans using the CLI/TUI. Skip for VSCode/app-server sessions.
+        if matches!(
+            turn_context.client.get_session_source(),
+            SessionSource::VSCode
+        ) {
+            return;
+        }
+
+        if turn_context
+            .client
+            .config()
+            .notices
+            .hide_working_tree_change_warning
+            .unwrap_or(false)
+        {
+            return;
+        }
+
+        let (repo_root, baseline_snapshot, bypass_once) = {
+            let state = self.state.lock().await;
+            (
+                state.cached_repo_root_for_worktree_notice.clone(),
+                state.last_worktree_snapshot.clone(),
+                state.worktree_change_pause_bypass_once,
+            )
+        };
+
+        // If the user just confirmed a soft pause (ignore once), avoid spamming a
+        // follow-up non-blocking warning for the same change.
+        if bypass_once {
+            return;
+        }
+
+        let Some(repo_root) = repo_root else {
+            return;
+        };
+        let Some(baseline_snapshot) = baseline_snapshot else {
+            return;
+        };
+
+        let Some(current_snapshot) = worktree_change_notice::snapshot_dirty_paths(&repo_root).await
+        else {
+            return;
+        };
+
+        let external_paths = worktree_change_notice::compute_external_changed_paths_unattributed(
+            &baseline_snapshot,
+            &current_snapshot,
+        );
+
+        if !worktree_change_notice::should_warn_external_change(
+            &baseline_snapshot,
+            &current_snapshot,
+            &external_paths,
+        ) {
+            return;
+        }
+
+        let message = worktree_change_notice::format_warning_message(&external_paths);
+        self.send_event(turn_context, EventMsg::Warning(WarningEvent { message }))
+            .await;
+    }
+
+    pub(crate) async fn update_worktree_notice_baseline(&self, turn_context: &TurnContext) {
+        if turn_context
+            .client
+            .config()
+            .notices
+            .hide_working_tree_change_warning
+            .unwrap_or(false)
+        {
+            return;
+        }
+
+        let Some(repo_root) =
+            crate::git_info::resolve_root_git_project_for_trust(turn_context.cwd.as_path())
+        else {
+            return;
+        };
+
+        let Some(snapshot) = worktree_change_notice::snapshot_dirty_paths(&repo_root).await else {
+            return;
+        };
+
+        let mut state = self.state.lock().await;
+        state.cached_repo_root_for_worktree_notice = Some(repo_root);
+        state.last_worktree_snapshot = Some(snapshot);
+    }
+
     pub(crate) async fn set_pending_compaction_preview(&self, preview: CompactionPreview) {
         let mut guard = self.pending_compaction_preview.lock().await;
         *guard = Some(preview);
@@ -1637,6 +1811,33 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             } => {
                 handlers::resolve_elicitation(&sess, server_name, request_id, decision).await;
             }
+            Op::WorktreeChangePreflight => {
+                use codex_protocol::protocol::SoftPauseEvent;
+                let current_context = sess
+                    .new_turn_with_sub_id(sub.id.clone(), SessionSettingsUpdate::default())
+                    .await;
+
+                if let Some(message) = sess
+                    .worktree_change_soft_pause_preflight(&current_context)
+                    .await
+                {
+                    // Mark the next UserInput as "ignore once" so the user doesn't get the
+                    // warning again immediately after confirming.
+                    {
+                        let mut state = sess.state.lock().await;
+                        state.worktree_change_pause_bypass_once = true;
+                    }
+                    sess.send_event(
+                        current_context.as_ref(),
+                        EventMsg::SoftPause(SoftPauseEvent { message }),
+                    )
+                    .await;
+                }
+            }
+            Op::WorktreeChangeContinue => {
+                let mut state = sess.state.lock().await;
+                state.worktree_change_pause_bypass_once = true;
+            }
             Op::Shutdown => {
                 if handlers::shutdown(&sess, sub.id.clone()).await {
                     break;
@@ -1675,6 +1876,7 @@ mod handlers {
     use codex_protocol::protocol::Op;
     use codex_protocol::protocol::ReviewDecision;
     use codex_protocol::protocol::ReviewRequest;
+    use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::WarningEvent;
 
@@ -1729,6 +1931,25 @@ mod handlers {
         };
 
         let current_context = sess.new_turn_with_sub_id(sub_id, updates).await;
+
+        // Keep the non-blocking warning (in addition to the soft pause) so the user
+        // still sees it when the frontend doesn't support soft pause.
+        // For UIs that implement soft pause, avoid duplicating warnings.
+        // Only emit the additional non-blocking warning for non-TUI frontends.
+        // The TUI implements the soft-pause UX and would otherwise show this twice.
+        if matches!(
+            current_context.client.get_session_source(),
+            SessionSource::Exec | SessionSource::Mcp
+        ) {
+            let sess_for_notice = Arc::clone(sess);
+            let ctx = Arc::clone(&current_context);
+            tokio::spawn(async move {
+                sess_for_notice
+                    .maybe_emit_worktree_change_warning(&ctx)
+                    .await;
+            });
+        }
+
         current_context
             .client
             .get_otel_manager()

@@ -76,6 +76,14 @@ pub enum Op {
         items: Vec<UserInput>,
     },
 
+    /// Check whether the server would pause the next `UserInput` due to
+    /// working tree changes outside the session.
+    WorktreeChangePreflight,
+
+    /// Continue with the next `UserInput` even if the working tree warning
+    /// would normally trigger a soft pause.
+    WorktreeChangeContinue,
+
     /// Similar to [`Op::UserInput`], but contains additional context required
     /// for a turn of a [`crate::codex_conversation::CodexConversation`].
     UserTurn {
@@ -489,6 +497,10 @@ pub enum EventMsg {
     /// indicates the task continued but the user should still be notified.
     Warning(WarningEvent),
 
+    /// Emitted when the server wants the UI to pause before submitting input
+    /// (e.g., due to external working tree changes).
+    SoftPause(SoftPauseEvent),
+
     /// Conversation history was compacted (either automatically or manually).
     ContextCompacted(ContextCompactedEvent),
 
@@ -618,6 +630,11 @@ pub enum EventMsg {
     AgentMessageContentDelta(AgentMessageContentDeltaEvent),
     ReasoningContentDelta(ReasoningContentDeltaEvent),
     ReasoningRawContentDelta(ReasoningRawContentDeltaEvent),
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
+pub struct SoftPauseEvent {
+    pub message: String,
 }
 
 /// Codex errors that we expose to clients.

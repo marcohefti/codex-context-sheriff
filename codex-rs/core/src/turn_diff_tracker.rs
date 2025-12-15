@@ -366,6 +366,13 @@ impl TurnDiffTracker {
         }
         aggregated
     }
+
+    pub fn touched_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self.temp_name_to_current_path.values().cloned().collect();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
 }
 
 /// Compute the Git SHA-1 blob object ID for the given content (bytes).
