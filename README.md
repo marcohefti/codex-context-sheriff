@@ -11,6 +11,19 @@
 
 ---
 
+## codex-context-sheriff fork
+
+This repository is a fork of the open source Codex CLI focused on **Context Sheriff** UX improvements: better observability and guardrails around compaction and working-tree drift.
+
+Background: https://blog.heftiweb.ch/p/context-amnesia
+
+- Canonical fork overview: `codex-rs/docs/context-sheriff.md`
+- Feature work:
+  - Compaction summary visible: https://github.com/marcohefti/codex-context-sheriff/issues/1 (PR: https://github.com/marcohefti/codex-context-sheriff/pull/4)
+  - Manual compaction preview/apply: https://github.com/marcohefti/codex-context-sheriff/issues/2 (PR: https://github.com/marcohefti/codex-context-sheriff/pull/5)
+  - Working tree change warning: https://github.com/marcohefti/codex-context-sheriff/issues/3 (PR: https://github.com/marcohefti/codex-context-sheriff/pull/6)
+- Rust CLI docs (build this fork): `codex-rs/README.md`
+
 ## Quickstart
 
 ### Installing and running Codex CLI
